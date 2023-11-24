@@ -40,7 +40,7 @@ namespace {
 
 enum : u32
 {
-  GAME_LIST_CACHE_SIGNATURE = 0x45434C47,
+  GAME_LIST_CACHE_SIGNATURE = 0x45434C48,
   GAME_LIST_CACHE_VERSION = 34,
 
   PLAYED_TIME_SERIAL_LENGTH = 32,
@@ -82,6 +82,8 @@ static bool OpenCacheForWriting();
 static bool WriteEntryToCache(const Entry* entry);
 static void CloseCacheFileStream();
 static void DeleteCacheFile();
+static void CreateDiscSetEntries();
+static void CreateDiscSetEntry(const Entry& seed_entry, const std::string& disc_set_id, Entry* entry);
 
 static std::string GetPlayedTimeFile();
 static bool ParsePlayedTimeLine(char* line, std::string& serial, PlayedTimeEntry& entry);
@@ -100,15 +102,16 @@ static bool s_game_list_loaded = false;
 
 const char* GameList::GetEntryTypeName(EntryType type)
 {
-  static std::array<const char*, static_cast<int>(EntryType::Count)> names = {{"Disc", "PSExe", "Playlist", "PSF"}};
+  static std::array<const char*, static_cast<int>(EntryType::Count)> names = {
+    {"Disc", "DiscSet", "PSExe", "Playlist", "PSF"}};
   return names[static_cast<int>(type)];
 }
 
 const char* GameList::GetEntryTypeDisplayName(EntryType type)
 {
   static std::array<const char*, static_cast<int>(EntryType::Count)> names = {
-    {TRANSLATE_NOOP("GameList", "Disc"), TRANSLATE_NOOP("GameList", "PS-EXE"), TRANSLATE_NOOP("GameList", "Playlist"),
-     TRANSLATE_NOOP("GameList", "PSF")}};
+    {TRANSLATE_NOOP("GameList", "Disc"), TRANSLATE_NOOP("GameList", "Disc Set"), TRANSLATE_NOOP("GameList", "PS-EXE"),
+     TRANSLATE_NOOP("GameList", "Playlist"), TRANSLATE_NOOP("GameList", "PSF")}};
   return Host::TranslateToCString("GameList", names[static_cast<int>(type)]);
 }
 
@@ -232,6 +235,19 @@ bool GameList::GetDiscListEntry(const std::string& path, Entry* entry)
     entry->max_blocks = dentry->max_blocks;
     entry->supported_controllers = dentry->supported_controllers;
     entry->compatibility = dentry->compatibility;
+
+    if (!cdi->HasSubImages())
+    {
+      for (size_t i = 0; i < dentry->disc_set_serials.size(); i++)
+      {
+        if (dentry->disc_set_serials[i] == entry->serial)
+        {
+          entry->disc_set_name = dentry->disc_set_name;
+          entry->disc_set_index = static_cast<s8>(i);
+          break;
+        }
+      }
+    }
   }
   else
   {
@@ -318,12 +334,13 @@ bool GameList::LoadEntriesFromCache(ByteStream* stream)
 
     if (!stream->ReadU8(&type) || !stream->ReadU8(&region) || !stream->ReadSizePrefixedString(&path) ||
         !stream->ReadSizePrefixedString(&ge.serial) || !stream->ReadSizePrefixedString(&ge.title) ||
-        !stream->ReadSizePrefixedString(&ge.genre) || !stream->ReadSizePrefixedString(&ge.publisher) ||
-        !stream->ReadSizePrefixedString(&ge.developer) || !stream->ReadU64(&ge.hash) ||
-        !stream->ReadU64(&ge.total_size) || !stream->ReadU64(reinterpret_cast<u64*>(&ge.last_modified_time)) ||
-        !stream->ReadU64(&ge.release_date) || !stream->ReadU16(&ge.supported_controllers) ||
-        !stream->ReadU8(&ge.min_players) || !stream->ReadU8(&ge.max_players) || !stream->ReadU8(&ge.min_blocks) ||
-        !stream->ReadU8(&ge.max_blocks) || !stream->ReadU8(&compatibility_rating) ||
+        !stream->ReadSizePrefixedString(&ge.disc_set_name) || !stream->ReadSizePrefixedString(&ge.genre) ||
+        !stream->ReadSizePrefixedString(&ge.publisher) || !stream->ReadSizePrefixedString(&ge.developer) ||
+        !stream->ReadU64(&ge.hash) || !stream->ReadU64(&ge.total_size) ||
+        !stream->ReadU64(reinterpret_cast<u64*>(&ge.last_modified_time)) || !stream->ReadU64(&ge.release_date) ||
+        !stream->ReadU16(&ge.supported_controllers) || !stream->ReadU8(&ge.min_players) ||
+        !stream->ReadU8(&ge.max_players) || !stream->ReadU8(&ge.min_blocks) || !stream->ReadU8(&ge.max_blocks) ||
+        !stream->ReadS8(&ge.disc_set_index) || !stream->ReadU8(&compatibility_rating) ||
         region >= static_cast<u8>(DiscRegion::Count) || type >= static_cast<u8>(EntryType::Count) ||
         compatibility_rating >= static_cast<u8>(GameDatabase::CompatibilityRating::Count))
     {
@@ -340,7 +357,7 @@ bool GameList::LoadEntriesFromCache(ByteStream* stream)
     if (iter != s_cache_map.end())
       iter->second = std::move(ge);
     else
-      s_cache_map.emplace(std::move(path), std::move(ge));
+      s_cache_map.emplace(ge.path, std::move(ge));
   }
 
   return true;
@@ -354,6 +371,7 @@ bool GameList::WriteEntryToCache(const Entry* entry)
   result &= s_cache_write_stream->WriteSizePrefixedString(entry->path);
   result &= s_cache_write_stream->WriteSizePrefixedString(entry->serial);
   result &= s_cache_write_stream->WriteSizePrefixedString(entry->title);
+  result &= s_cache_write_stream->WriteSizePrefixedString(entry->disc_set_name);
   result &= s_cache_write_stream->WriteSizePrefixedString(entry->genre);
   result &= s_cache_write_stream->WriteSizePrefixedString(entry->publisher);
   result &= s_cache_write_stream->WriteSizePrefixedString(entry->developer);
@@ -366,6 +384,7 @@ bool GameList::WriteEntryToCache(const Entry* entry)
   result &= s_cache_write_stream->WriteU8(entry->max_players);
   result &= s_cache_write_stream->WriteU8(entry->min_blocks);
   result &= s_cache_write_stream->WriteU8(entry->max_blocks);
+  result &= s_cache_write_stream->WriteS8(entry->disc_set_index);
   result &= s_cache_write_stream->WriteU8(static_cast<u8>(entry->compatibility));
   return result;
 }
@@ -581,7 +600,7 @@ const GameList::Entry* GameList::GetEntryForPath(const char* path)
   return nullptr;
 }
 
-const GameList::Entry* GameList::GetEntryBySerial(const std::string_view& serial)
+const GameList::Entry* GameList::GetEntryBySerial(std::string_view serial)
 {
   for (const Entry& entry : s_entries)
   {
@@ -595,7 +614,7 @@ const GameList::Entry* GameList::GetEntryBySerial(const std::string_view& serial
   return nullptr;
 }
 
-const GameList::Entry* GameList::GetEntryBySerialAndHash(const std::string_view& serial, u64 hash)
+const GameList::Entry* GameList::GetEntryBySerialAndHash(std::string_view serial, u64 hash)
 {
   for (const Entry& entry : s_entries)
   {
@@ -604,6 +623,19 @@ const GameList::Entry* GameList::GetEntryBySerialAndHash(const std::string_view&
   }
 
   return nullptr;
+}
+
+std::vector<const GameList::Entry*> GameList::GetDiscSetMembers(std::string_view disc_set_name)
+{
+  std::vector<const Entry*> ret;
+  for (const Entry& entry : s_entries)
+  {
+    if (!entry.disc_set_member || disc_set_name != entry.disc_set_name)
+      continue;
+
+    ret.push_back(&entry);
+  }
+  return ret;
 }
 
 u32 GameList::GetEntryCount()
@@ -664,9 +696,108 @@ void GameList::Refresh(bool invalidate_cache, bool only_cache, ProgressCallback*
     }
   }
 
+  CreateDiscSetEntries();
+
   // don't need unused cache entries
   CloseCacheFileStream();
   s_cache_map.clear();
+}
+
+void GameList::CreateDiscSetEntries()
+{
+  std::unique_lock lock(s_mutex);
+
+  for (size_t i = 0; i < s_entries.size(); i++)
+  {
+    const Entry& entry = s_entries[i];
+
+    // only first discs can create sets
+    if (entry.type != EntryType::Disc || entry.disc_set_member || entry.disc_set_index != 0)
+      continue;
+
+    // TODO: Maybe need to use a different path...
+    const std::string& disc_set_name = entry.disc_set_name;
+    const std::string& disc_set_id = entry.disc_set_name;
+
+    // already have a disc set by this name?
+    if (GetEntryForPath(disc_set_id.c_str()))
+      continue;
+
+    // need at least two discs for a set
+    bool found_another_disc = false;
+    for (const Entry& other_entry : s_entries)
+    {
+      if (other_entry.type != EntryType::Disc || other_entry.disc_set_member ||
+          other_entry.disc_set_name != disc_set_name || other_entry.disc_set_index == entry.disc_set_index)
+      {
+        continue;
+      }
+      found_another_disc = true;
+      break;
+    }
+    if (!found_another_disc)
+    {
+      Log_DevFmt("Not creating disc set {}, only one disc found", disc_set_name);
+      continue;
+    }
+
+    Entry set_entry;
+    const bool in_cache = GetGameListEntryFromCache(disc_set_id, &set_entry);
+    if (!in_cache)
+      CreateDiscSetEntry(entry, disc_set_id, &set_entry);
+
+    // mark all discs for this set as part of it, so we don't try to add them again, and for filtering
+    u32 num_parts = 0;
+    for (Entry& other_entry : s_entries)
+    {
+      if (other_entry.type != EntryType::Disc || other_entry.disc_set_member ||
+          other_entry.disc_set_name != disc_set_name)
+      {
+        continue;
+      }
+
+      if (!in_cache)
+        Log_InfoFmt("Adding {} to disc set {}", other_entry.path, disc_set_id);
+
+      other_entry.disc_set_member = true;
+      num_parts++;
+    }
+
+    if (!in_cache)
+      Log_InfoFmt("Created disc set {} from {} parts", disc_set_id, num_parts);
+
+    s_entries.push_back(std::move(set_entry));
+  }
+}
+
+void GameList::CreateDiscSetEntry(const Entry& seed_entry, const std::string& disc_set_id, Entry* entry)
+{
+  entry->type = EntryType::DiscSet;
+  entry->region = seed_entry.region;
+  entry->path = disc_set_id;
+  entry->serial = seed_entry.serial;
+  entry->title = seed_entry.disc_set_name;
+  entry->disc_set_name = seed_entry.disc_set_name;
+  entry->genre = seed_entry.developer;
+  entry->publisher = seed_entry.publisher;
+  entry->developer = seed_entry.developer;
+  entry->hash = seed_entry.hash;
+  entry->total_size = seed_entry.total_size;
+  entry->last_modified_time = seed_entry.last_modified_time;
+  entry->last_played_time = seed_entry.last_played_time;
+  entry->total_played_time = seed_entry.total_played_time;
+  entry->release_date = seed_entry.release_date;
+  entry->supported_controllers = seed_entry.supported_controllers;
+  entry->min_players = seed_entry.min_players;
+  entry->max_players = seed_entry.max_players;
+  entry->min_blocks = seed_entry.min_blocks;
+  entry->max_blocks = seed_entry.max_blocks;
+
+  if (s_cache_write_stream || OpenCacheForWriting())
+  {
+    if (!WriteEntryToCache(entry))
+      Log_ErrorFmt("Failed to save {} to cache", disc_set_id);
+  }
 }
 
 std::string GameList::GetCoverImagePathForEntry(const Entry* entry)

@@ -56,18 +56,28 @@ public:
 
   bool filterAcceptsRow(int source_row, const QModelIndex& source_parent) const override
   {
-    if (m_filter_type != GameList::EntryType::Count || m_filter_region != DiscRegion::Count || !m_filter_name.isEmpty())
+    const auto lock = GameList::GetLock();
+    const GameList::Entry* entry = GameList::GetEntryByIndex(source_row);
+
+    if (m_merge_disc_sets)
     {
-      const auto lock = GameList::GetLock();
-      const GameList::Entry* entry = GameList::GetEntryByIndex(source_row);
-      if (m_filter_type != GameList::EntryType::Count && entry->type != m_filter_type)
-        return false;
-      if (m_filter_region != DiscRegion::Count && entry->region != m_filter_region)
-        return false;
-      if (!m_filter_name.isEmpty() &&
-          !QString::fromStdString(entry->title).contains(m_filter_name, Qt::CaseInsensitive))
+      if (entry->disc_set_member)
         return false;
     }
+    else
+    {
+      if (entry->type == GameList::EntryType::DiscSet)
+        return true;
+    }
+
+    if (m_filter_type != GameList::EntryType::Count && entry->type != m_filter_type)
+      return false;
+
+    if (m_filter_region != DiscRegion::Count && entry->region != m_filter_region)
+      return false;
+
+    if (!m_filter_name.isEmpty() && !QString::fromStdString(entry->title).contains(m_filter_name, Qt::CaseInsensitive))
+      return false;
 
     return QSortFilterProxyModel::filterAcceptsRow(source_row, source_parent);
   }
@@ -82,6 +92,7 @@ private:
   GameList::EntryType m_filter_type = GameList::EntryType::Count;
   DiscRegion m_filter_region = DiscRegion::Count;
   QString m_filter_name;
+  bool m_merge_disc_sets = true; // TODO: OPTION
 };
 
 GameListWidget::GameListWidget(QWidget* parent /* = nullptr */) : QWidget(parent)

@@ -16,6 +16,7 @@
 #include "memorycardeditordialog.h"
 #include "qthost.h"
 #include "qtutils.h"
+#include "selectdiscdialog.h"
 #include "settingswindow.h"
 #include "settingwidgetbinder.h"
 
@@ -1356,7 +1357,22 @@ void MainWindow::onGameListEntryActivated()
       return;
     }
 
-    promptForDiscChange(QString::fromStdString(entry->path));
+    if (entry->type != GameList::EntryType::DiscSet)
+    {
+      promptForDiscChange(QString::fromStdString(entry->path));
+      return;
+    }
+
+    // disc set... need to figure out the disc we want
+    SelectDiscDialog dlg(entry->disc_set_name, this);
+    lock.unlock();
+    if (dlg.exec())
+    {
+      std::string real_disc_path = dlg.takeSelectedDiscPath();
+      if (!real_disc_path.empty())
+        promptForDiscChange(QString::fromStdString(real_disc_path));
+    }
+
     return;
   }
 
@@ -1374,8 +1390,22 @@ void MainWindow::onGameListEntryActivated()
       save_path = std::move(resume_path);
   }
 
-  // only resume if the option is enabled, and we have one for this game
-  startFile(entry->path, std::move(save_path), std::nullopt);
+  if (entry->type != GameList::EntryType::DiscSet || save_path.has_value())
+  {
+    // only resume if the option is enabled, and we have one for this game
+    startFile(entry->path, std::move(save_path), std::nullopt);
+    return;
+  }
+
+  // disc set... need to figure out the disc we want
+  SelectDiscDialog dlg(entry->disc_set_name, this);
+  lock.unlock();
+  if (dlg.exec())
+  {
+    std::string real_disc_path = dlg.takeSelectedDiscPath();
+    if (!real_disc_path.empty())
+      startFile(real_disc_path, std::move(save_path), std::nullopt);
+  }
 }
 
 void MainWindow::onGameListEntryContextMenuRequested(const QPoint& point)

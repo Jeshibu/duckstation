@@ -135,6 +135,9 @@ set(SRCS
   qtutils.cpp
   qtutils.h
   resource.h
+  selectdiscdialog.cpp
+  selectdiscdialog.h
+  selectdiscdialog.ui
   settingswindow.cpp
   settingswindow.h
   settingswindow.ui
